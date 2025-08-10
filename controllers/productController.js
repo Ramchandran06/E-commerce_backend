@@ -15,24 +15,24 @@ exports.getAllProducts = async (req, res) => {
     const limitNum = parseInt(limit);
     const offset = (pageNum - 1) * limitNum;
 
-    let whereConditions = ["p.Stock > 0"];
+    let whereConditions = ["p.stock > 0"];
     let queryParams = [];
     let paramIndex = 1;
 
     if (category) {
-      whereConditions.push(`p.Category = $${paramIndex++}`);
+      whereConditions.push(`p.category = $${paramIndex++}`);
       queryParams.push(category);
     }
     if (minPrice) {
-      whereConditions.push(`p.Price >= $${paramIndex++}`);
+      whereConditions.push(`p.price >= $${paramIndex++}`);
       queryParams.push(minPrice);
     }
     if (maxPrice) {
-      whereConditions.push(`p.Price <= $${paramIndex++}`);
+      whereConditions.push(`p.price <= $${paramIndex++}`);
       queryParams.push(maxPrice);
     }
     if (rating) {
-      whereConditions.push(`p.Rating >= $${paramIndex++}`);
+      whereConditions.push(`p.rating >= $${paramIndex++}`);
       queryParams.push(rating);
     }
     const whereClause =
@@ -176,41 +176,41 @@ exports.getNewArrivals = async (req, res) => {
 
 exports.createProduct = async (req, res) => {
   const {
-    Name,
-    Description,
-    Price,
-    Stock,
-    Brand,
-    Category,
-    Thumbnail,
-    ImagesJSON,
-    DiscountPercentage,
+    name,
+    description,
+    price,
+    stock,
+    brand,
+    category,
+    thumbnail,
+    imagesjson,
+    discountpercentage,
   } = req.body;
 
-  if (!Name || !Price || !Stock || !Category || !Thumbnail) {
+  if (!name || !price || !stock || !category || !thumbnail) {
     return res.status(400).json({
       message:
-        "Name, Price, Stock, Category, and Thumbnail are required fields.",
+        "name, price, stock, category, and thumbnail are required fields.",
     });
   }
 
   try {
     const query = `
-      INSERT INTO Products (Name, Description, Price, Stock, Brand, Category, Thumbnail, ImagesJSON, DiscountPercentage)
+      INSERT INTO Products (name, description, price, stock, brand, category, thumbnail, imagesjson, discountpercentage)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING productid; 
     `;
 
     const values = [
-      Name,
-      Description,
-      Price,
-      Stock,
-      Brand,
-      Category,
-      Thumbnail,
-      ImagesJSON || "[]",
-      DiscountPercentage || 0,
+      name,
+      description,
+      price,
+      stock,
+      brand,
+      category,
+      thumbnail,
+      imagesjson || "[]",
+      discountpercentage || 0,
     ];
 
     const result = await pool.query(query, values);
