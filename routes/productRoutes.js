@@ -13,17 +13,10 @@ router.get("/new-arrivals", productController.getNewArrivals);
 router.get("/deal-of-the-day", productController.getDealOfTheDay);
 router.get("/search", productController.searchProducts);
 router.get("/categories/all", productController.getAllCategories);
-router.get(
-  "/admin/stats",
-  authMiddleware,
-  adminMiddleware,
-  productController.getProductsStats
-);
-
 
 router.get("/category/:categoryName", productController.getProductsByCategory);
 router.get("/:id", productController.getProductById);
-router.get("/", productController.getAllProducts);
+
 
 
 router.post(
@@ -44,5 +37,14 @@ router.delete(
   adminMiddleware,
   productController.deleteProduct
 );
+
+router.get(
+  "/admin/stats",
+  authMiddleware,
+  adminMiddleware,
+  productController.getProductsStats
+);
+
+router.get("/", productController.getAllProducts);
 
 module.exports = router;
