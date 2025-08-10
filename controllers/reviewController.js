@@ -1,118 +1,20 @@
-const sql = require("mssql");
-const dbConfig = require("../dbConfig");
+const pool = require("../db");
 
 exports.getProductReviews = async (req, res) => {
   const { productId } = req.params;
   try {
-    const pool = await sql.connect(dbConfig);
     const query = `
-      SELECT r.ReviewID, r.Rating, r.Comment, r.CreatedAt, u.FullName
+      SELECT r.reviewid, r.rating, r.comment, r.createdat, u.fullname
       FROM ProductReviews r
-      JOIN Users u ON r.UserID = u.UserID
-      WHERE r.ProductID = @ProductID
-      ORDER BY r.CreatedAt DESC;
+      JOIN Users u ON r.userid = u.userid
+      WHERE r.productid = $1
+      ORDER BY r.createdat DESC;
     `;
-    const result = await pool
-      .request()
-      .input("ProductID", sql.Int, productId)
-      .query(query);
-    res.status(200).json(result.recordset);
+    const result = await pool.query(query, [productId]);
+    res.status(200).json(result.rows);
   } catch (error) {
+    console.error("Error fetching reviews:", error);
     res.status(500).json({ message: "Failed to fetch reviews." });
-  }
-};
-
-exports.addReview = async (req, res) => {
-  const { productId } = req.params;
-  const { rating, comment } = req.body;
-  const userId = req.user.userId;
-
-  if (!rating) return res.status(400).json({ message: "Rating is required." });
-
-  try {
-    const pool = await sql.connect(dbConfig);
-
-    const orderCheckQuery = `
-        SELECT TOP 1 o.OrderID FROM Orders o
-        JOIN OrderItems oi ON o.OrderID = oi.OrderID
-        WHERE o.UserID = @UserID AND oi.ProductID = @ProductID AND o.OrderStatus = 'Delivered';
-    `;
-    const orderResult = await pool
-      .request()
-      .input("UserID", sql.Int, userId)
-      .input("ProductID", sql.Int, productId)
-      .query(orderCheckQuery);
-
-    if (orderResult.recordset.length === 0) {
-      return res.status(403).json({
-        message:
-          "You can only review products you have purchased and received.",
-      });
-    }
-
-    const existingReviewQuery = `SELECT ReviewID FROM ProductReviews WHERE UserID = @UserID AND ProductID = @ProductID`;
-    const existingReviewResult = await pool
-      .request()
-      .input("UserID", sql.Int, userId)
-      .input("ProductID", sql.Int, productId)
-      .query(existingReviewQuery);
-    if (existingReviewResult.recordset.length > 0) {
-      return res
-        .status(409)
-        .json({ message: "You have already reviewed this product." });
-    }
-
-    const insertQuery = `
-      INSERT INTO ProductReviews (ProductID, UserID, Rating, Comment)
-      VALUES (@ProductID, @UserID, @Rating, @Comment);
-    `;
-    await pool
-      .request()
-      .input("ProductID", sql.Int, productId)
-      .input("UserID", sql.Int, userId)
-      .input("Rating", sql.Int, rating)
-      .input("Comment", sql.NVarChar, comment)
-      .query(insertQuery);
-
-    res.status(201).json({ message: "Thank you for your review!" });
-  } catch (error) {
-    res.status(500).json({ message: "Failed to submit your review." });
-  }
-};
-
-exports.getFeaturedReviews = async (req, res) => {
-  try {
-    const pool = await sql.connect(dbConfig);
-    const query = `
-      SELECT TOP 5 
-        pr.ReviewID, 
-        pr.Rating, 
-        pr.Comment, 
-        u.FullName, 
-        u.ProfilePictureURL,
-        p.Name as ProductName
-      FROM 
-        ProductReviews AS pr
-      JOIN 
-        Users AS u ON pr.UserID = u.UserID
-      JOIN 
-        Products AS p ON pr.ProductID = p.ProductID
-      WHERE 
-        pr.IsFeatured = 1
-      ORDER BY 
-        pr.CreatedAt DESC;
-    `;
-
-    const result = await pool.request().query(query);
-
-    console.log("Featured Reviews API Response:", result.recordset);
-
-    res.status(200).json(result.recordset);
-  } catch (error) {
-    console.error("!!! FATAL ERROR in getFeaturedReviews !!!:", error);
-    res.status(500).json({
-      message: "Failed to fetch featured reviews due to a server error.",
-    });
   }
 };
 
@@ -127,84 +29,105 @@ exports.addReview = async (req, res) => {
       .json({ message: "A valid rating between 1 and 5 is required." });
   }
 
-  const pool = await sql.connect(dbConfig);
-  const transaction = new sql.Transaction(pool);
-
+  const client = await pool.connect();
   try {
-    await transaction.begin();
+    await client.query("BEGIN");
 
     const orderCheckQuery = `
-        SELECT TOP 1 o.OrderID 
-        FROM Orders o
-        JOIN OrderItems oi ON o.OrderID = oi.OrderID
-        WHERE o.UserID = @UserID 
-          AND oi.ProductID = @ProductID 
-          AND o.OrderStatus = 'Delivered';
+      SELECT o.orderid 
+      FROM Orders o
+      JOIN OrderItems oi ON o.orderid = oi.orderid
+      WHERE o.userid = $1 AND oi.productid = $2 AND LOWER(o.orderstatus) = 'delivered'
+      LIMIT 1;
     `;
-    const orderResult = await new sql.Request(transaction)
-      .input("UserID", sql.Int, userId)
-      .input("ProductID", sql.Int, productId)
-      .query(orderCheckQuery);
+    const orderResult = await client.query(orderCheckQuery, [
+      userId,
+      productId,
+    ]);
 
-    if (orderResult.recordset.length === 0) {
-      await transaction.rollback();
-      return res.status(403).json({
-        message:
-          "You can only review products you have purchased and received.",
-      });
+    if (orderResult.rows.length === 0) {
+      throw new Error(
+        "You can only review products you have purchased and received."
+      );
     }
 
-    const existingReviewQuery = `SELECT ReviewID FROM ProductReviews WHERE UserID = @UserID AND ProductID = @ProductID`;
-    const existingReviewResult = await new sql.Request(transaction)
-      .input("UserID", sql.Int, userId)
-      .input("ProductID", sql.Int, productId)
-      .query(existingReviewQuery);
+    const existingReviewQuery = `SELECT reviewid FROM ProductReviews WHERE userid = $1 AND productid = $2`;
+    const existingReviewResult = await client.query(existingReviewQuery, [
+      userId,
+      productId,
+    ]);
 
-    if (existingReviewResult.recordset.length > 0) {
-      await transaction.rollback();
-      return res.status(409).json({
-        message: "You have already submitted a review for this product.",
-      });
+    if (existingReviewResult.rows.length > 0) {
+      throw new Error("You have already submitted a review for this product.");
     }
 
-    await new sql.Request(transaction)
-      .input("ProductID", sql.Int, productId)
-      .input("UserID", sql.Int, userId)
-      .input("Rating", sql.Int, rating)
-      .input("Comment", sql.NVarChar, comment || null)
-      .query(
-        `INSERT INTO ProductReviews (ProductID, UserID, Rating, Comment) VALUES (@ProductID, @UserID, @Rating, @Comment)`
-      );
-
-    const avgRatingQuery = `
-      SELECT AVG(CAST(Rating AS FLOAT)) as newAvgRating 
-      FROM ProductReviews 
-      WHERE ProductID = @ProductID
+    const isFeatured = rating === 5;
+    const insertQuery = `
+      INSERT INTO ProductReviews (ProductID, UserID, Rating, Comment, IsFeatured) 
+      VALUES ($1, $2, $3, $4, $5)
     `;
-    const avgResult = await new sql.Request(transaction)
-      .input("ProductID", sql.Int, productId)
-      .query(avgRatingQuery);
-    const newAvgRating = avgResult.recordset[0].newAvgRating;
+    const insertValues = [
+      productId,
+      userId,
+      rating,
+      comment || null,
+      isFeatured,
+    ];
+    await client.query(insertQuery, insertValues);
 
-    await new sql.Request(transaction)
-      .input("ProductID", sql.Int, productId)
-      .input("NewRating", sql.Decimal(2, 1), newAvgRating)
-      .query(
-        "UPDATE Products SET Rating = @NewRating WHERE ProductID = @ProductID"
-      );
+    const avgRatingQuery = `SELECT AVG(Rating) as newAvgRating FROM ProductReviews WHERE ProductID = $1`;
+    const avgResult = await client.query(avgRatingQuery, [productId]);
+    const newAvgRating = parseFloat(avgResult.rows[0].newavgrating).toFixed(2);
+    await client.query("UPDATE Products SET Rating = $1 WHERE ProductID = $2", [
+      newAvgRating,
+      productId,
+    ]);
 
-    await transaction.commit();
+    await client.query("COMMIT");
 
     res.status(201).json({
       message: "Thank you for your review! It has been submitted successfully.",
     });
   } catch (error) {
-    if (transaction.active) {
-      await transaction.rollback();
-    }
+    await client.query("ROLLBACK");
+
     console.error("Add Review Transaction Error:", error);
+
+    if (
+      error.message.includes("You can only review") ||
+      error.message.includes("You have already submitted")
+    ) {
+      return res.status(403).json({ message: error.message });
+    }
+
     res
       .status(500)
       .json({ message: "Failed to submit your review due to a server error." });
+  } finally {
+    client.release();
+  }
+};
+
+exports.getFeaturedReviews = async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        pr.reviewid, pr.rating, pr.comment, 
+        u.fullname, u.profilepictureurl,
+        p.name as productname
+      FROM ProductReviews AS pr
+      JOIN Users AS u ON pr.userid = u.userid
+      JOIN Products AS p ON pr.productid = p.productid
+      WHERE pr.isfeatured = true
+      ORDER BY pr.createdat DESC
+      LIMIT 5;
+    `;
+    const result = await pool.query(query);
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error("Error in getFeaturedReviews:", error);
+    res.status(500).json({
+      message: "Failed to fetch featured reviews due to a server error.",
+    });
   }
 };

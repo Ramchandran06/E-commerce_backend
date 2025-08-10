@@ -29,18 +29,7 @@ const debugMulter = (req, res, next) => {
 router.put(
   "/profile/picture",
   authMiddleware,
-  (req, res, next) => {
-    const uploader = upload.single("profilePicture");
-    uploader(req, res, function (err) {
-      if (err) {
-        req.multerError = err;
-      }
-      next();
-    });
-  },
-
-  debugMulter,
-
+  upload.single("profilePicture"), 
   authController.updateProfilePicture
 );
 

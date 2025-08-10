@@ -12,7 +12,7 @@ const faqRoutes = require("./routes/faqRoutes");
 const reviewRoutes = require("./routes/reviewRoutes");
 const returnRoutes = require("./routes/returnRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
-
+const path = require("path");
 
 const app = express();
 const port = process.env.API_PORT || 5000;
@@ -20,6 +20,15 @@ const port = process.env.API_PORT || 5000;
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+app.use((req, res, next) => {
+  console.log(
+    `[LOGGER] Request received for: ${req.method} ${req.originalUrl}`
+  );
+  next();
+});
+
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // API Routes
 app.use("/api/products", productRoutes);
@@ -33,7 +42,6 @@ app.use("/api/faq", faqRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/returns", returnRoutes);
 app.use("/api/dashboard", dashboardRoutes);
-
 
 app.listen(port, () => {
   console.log(`API server is running on http://localhost:${port}`);

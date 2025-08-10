@@ -1,39 +1,35 @@
-const sql = require("mssql");
-const dbConfig = require("../dbConfig");
+const pool = require("../db");
 
 /**
-  helper function.
- * @param {object} pool
- * @param {number} userId 
- * @returns {Promise<Array>} 
+ * Helper function to get cart items for a user.
+ * @param {number} userId
+ * @returns {Promise<Array>}
  */
-const getCartItemsByUserId = async (pool, userId) => {
+const getCartItemsByUserId = async (userId) => {
   const query = `
         SELECT 
-            ci.ProductID, 
-            ci.Quantity as qty, 
-            p.Name,
-            p.Price,
-            p.DiscountPercentage,
-            p.Thumbnail,
-            p.Stock
+            ci.productid, 
+            ci.quantity, 
+            p.name,
+            p.price,
+            p.discountpercentage,
+            p.thumbnail,
+            p.stock
         FROM Carts c
-        JOIN CartItems ci ON c.CartID = ci.CartID
-        JOIN Products p ON ci.ProductID = p.ProductID
-        WHERE c.UserID = @UserID
+        JOIN CartItems ci ON c.cartid = ci.cartid
+        JOIN Products p ON ci.productid = p.productid
+        WHERE c.userid = $1
     `;
-  const result = await pool
-    .request()
-    .input("UserID", sql.Int, userId)
-    .query(query);
-  return result.recordset;
+ 
+  const result = await pool.query(query, [userId]);
+  return result.rows;
 };
+
 
 exports.getCart = async (req, res) => {
   const userId = req.user.userId;
   try {
-    let pool = await sql.connect(dbConfig);
-    const cartItems = await getCartItemsByUserId(pool, userId);
+    const cartItems = await getCartItemsByUserId(userId);
     res.status(200).json(cartItems);
   } catch (error) {
     console.error("Get Cart Error:", error);
@@ -41,26 +37,57 @@ exports.getCart = async (req, res) => {
   }
 };
 
+
 exports.addToCart = async (req, res) => {
   const userId = req.user.userId;
   const { productId, quantity } = req.body;
 
-  if (!productId || !quantity) {
+  if (!productId || !quantity || quantity < 1) {
     return res
       .status(400)
-      .json({ message: "Product ID and quantity are required." });
+      .json({ message: "Product ID and a valid quantity are required." });
   }
 
   try {
-    let pool = await sql.connect(dbConfig);
-    await pool
-      .request()
-      .input("UserID", sql.Int, userId)
-      .input("ProductID", sql.Int, productId)
-      .input("Quantity", sql.Int, quantity)
-      .execute("usp_AddToCart");
+   
+    let cartResult = await pool.query(
+      "SELECT cartid FROM Carts WHERE userid = $1",
+      [userId]
+    );
+    let cartId;
 
-    const newCartItems = await getCartItemsByUserId(pool, userId);
+    if (cartResult.rows.length > 0) {
+      cartId = cartResult.rows[0].cartid;
+    } else {
+      let newCartResult = await pool.query(
+        "INSERT INTO Carts (userid) VALUES ($1) RETURNING cartid",
+        [userId]
+      );
+      cartId = newCartResult.rows[0].cartid;
+    }
+
+  
+    let cartItemResult = await pool.query(
+      "SELECT * FROM CartItems WHERE cartid = $1 AND productid = $2",
+      [cartId, productId]
+    );
+
+    if (cartItemResult.rows.length > 0) {
+     
+      await pool.query(
+        "UPDATE CartItems SET quantity = quantity + $1 WHERE cartid = $2 AND productid = $3",
+        [quantity, cartId, productId]
+      );
+    } else {
+      
+      await pool.query(
+        "INSERT INTO CartItems (cartid, productid, quantity) VALUES ($1, $2, $3)",
+        [cartId, productId, quantity]
+      );
+    }
+    
+
+    const newCartItems = await getCartItemsByUserId(userId);
     res.status(200).json({
       message: "Item added to cart successfully!",
       cart: newCartItems,
@@ -71,21 +98,23 @@ exports.addToCart = async (req, res) => {
   }
 };
 
+
 exports.removeFromCart = async (req, res) => {
   const userId = req.user.userId;
   const { productId } = req.params;
   try {
-    let pool = await sql.connect(dbConfig);
-    await pool
-      .request()
-      .input("UserID", sql.Int, userId)
-      .input("ProductID", sql.Int, productId).query(`
-                DELETE ci FROM CartItems ci
-                JOIN Carts c ON ci.CartID = c.CartID
-                WHERE c.UserID = @UserID AND ci.ProductID = @ProductID
-            `);
 
-    const newCartItems = await getCartItemsByUserId(pool, userId);
+    const query = `
+        DELETE FROM CartItems
+        WHERE cartitemid IN (
+            SELECT ci.cartitemid FROM CartItems ci
+            JOIN Carts c ON ci.cartid = c.cartid
+            WHERE c.userid = $1 AND ci.productid = $2
+        )
+    `;
+    await pool.query(query, [userId, productId]);
+
+    const newCartItems = await getCartItemsByUserId(userId);
     res
       .status(200)
       .json({ message: "Item removed from cart.", cart: newCartItems });
@@ -95,11 +124,13 @@ exports.removeFromCart = async (req, res) => {
   }
 };
 
+
 exports.updateCartQuantity = async (req, res) => {
   const userId = req.user.userId;
   const { productId, quantity } = req.body;
 
   if (quantity < 1) {
+    
     return exports.removeFromCart(
       { user: { userId }, params: { productId } },
       res
@@ -107,19 +138,19 @@ exports.updateCartQuantity = async (req, res) => {
   }
 
   try {
-    let pool = await sql.connect(dbConfig);
-    await pool
-      .request()
-      .input("UserID", sql.Int, userId)
-      .input("ProductID", sql.Int, productId)
-      .input("Quantity", sql.Int, quantity).query(`
-                UPDATE ci SET Quantity = @Quantity
-                FROM CartItems ci
-                JOIN Carts c ON ci.CartID = c.CartID
-                WHERE c.UserID = @UserID AND ci.ProductID = @ProductID
-            `);
+   
+    const query = `
+        UPDATE CartItems
+        SET quantity = $1
+        WHERE cartitemid IN (
+            SELECT ci.cartitemid FROM CartItems ci
+            JOIN Carts c ON ci.cartid = c.cartid
+            WHERE c.userid = $2 AND ci.productid = $3
+        )
+    `;
+    await pool.query(query, [quantity, userId, productId]);
 
-    const newCartItems = await getCartItemsByUserId(pool, userId);
+    const newCartItems = await getCartItemsByUserId(userId);
     res
       .status(200)
       .json({ message: "Cart quantity updated.", cart: newCartItems });
@@ -129,15 +160,19 @@ exports.updateCartQuantity = async (req, res) => {
   }
 };
 
+
 exports.clearCart = async (req, res) => {
   const userId = req.user.userId;
   try {
-    let pool = await sql.connect(dbConfig);
-    await pool.request().input("UserID", sql.Int, userId).query(`
-                DELETE ci FROM CartItems ci
-                JOIN Carts c ON ci.CartID = c.CartID
-                WHERE c.UserID = @UserID
-            `);
+    const query = `
+        DELETE FROM CartItems
+        WHERE cartitemid IN (
+            SELECT ci.cartitemid FROM CartItems ci
+            JOIN Carts c ON ci.cartid = c.cartid
+            WHERE c.userid = $1
+        )
+    `;
+    await pool.query(query, [userId]);
     res.status(200).json({ message: "Cart cleared successfully.", cart: [] });
   } catch (error) {
     console.error("Clear Cart Error:", error);

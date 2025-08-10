@@ -1,14 +1,22 @@
 require("dotenv").config();
+const { Pool } = require("pg");
 
-const dbConfig = {
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  server: process.env.DB_SERVER,
-  database: process.env.DB_DATABASE,
-  options: {
-    encrypt: false,
-    trustServerCertificate: true,
+const connectionString = process.env.DATABASE_URL;
+
+const pool = new Pool({
+  connectionString: connectionString,
+
+  ssl: {
+    rejectUnauthorized: false,
   },
-};
+});
 
-module.exports = dbConfig;
+pool.query("SELECT NOW()", (err, res) => {
+  if (err) {
+    console.error("Error connecting to the database:", err.stack);
+  } else {
+    console.log("Successfully connected to the database at:", res.rows[0].now);
+  }
+});
+
+module.exports = pool;

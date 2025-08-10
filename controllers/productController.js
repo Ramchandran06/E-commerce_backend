@@ -1,5 +1,4 @@
-const sql = require("mssql");
-const dbConfig = require("../dbConfig");
+const pool = require("../db");
 
 exports.getAllProducts = async (req, res) => {
   try {
@@ -16,67 +15,68 @@ exports.getAllProducts = async (req, res) => {
     const limitNum = parseInt(limit);
     const offset = (pageNum - 1) * limitNum;
 
-    const pool = await sql.connect(dbConfig);
-    const request = pool.request();
+    let whereConditions = ["p.Stock > 0"];
+    let queryParams = [];
+    let paramIndex = 1;
 
-    // WHERE clause
-    let whereClause = " WHERE p.Stock > 0";
     if (category) {
-      whereClause += " AND p.Category = @Category";
-      request.input("Category", sql.NVarChar, category);
+      whereConditions.push(`p.Category = $${paramIndex++}`);
+      queryParams.push(category);
     }
     if (minPrice) {
-      whereClause += " AND p.Price >= @MinPrice";
-      request.input("MinPrice", sql.Decimal(10, 2), minPrice);
+      whereConditions.push(`p.Price >= $${paramIndex++}`);
+      queryParams.push(minPrice);
     }
     if (maxPrice) {
-      whereClause += " AND p.Price <= @MaxPrice";
-      request.input("MaxPrice", sql.Decimal(10, 2), maxPrice);
+      whereConditions.push(`p.Price <= $${paramIndex++}`);
+      queryParams.push(maxPrice);
     }
     if (rating) {
-      whereClause += " AND p.Rating >= @Rating";
-      request.input("Rating", sql.Decimal(2, 1), rating);
+      whereConditions.push(`p.Rating >= $${paramIndex++}`);
+      queryParams.push(rating);
     }
+    const whereClause =
+      whereConditions.length > 0
+        ? `WHERE ${whereConditions.join(" AND ")}`
+        : "";
 
-    // ORDER BY clause
-    let orderByClause = " ORDER BY p.CreatedAt DESC";
+    let orderByClause = " ORDER BY p.createdat DESC";
     if (sortBy) {
       switch (sortBy) {
         case "price_asc":
-          orderByClause = " ORDER BY p.Price ASC";
+          orderByClause = " ORDER BY p.price ASC";
           break;
         case "price_desc":
-          orderByClause = " ORDER BY p.Price DESC";
+          orderByClause = " ORDER BY p.price DESC";
           break;
         case "name_asc":
-          orderByClause = " ORDER BY p.Name ASC";
+          orderByClause = " ORDER BY p.name ASC";
           break;
       }
     }
 
-    // Pagination clause
-    const paginationClause = `OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY`;
-    request.input("Offset", sql.Int, offset);
-    request.input("Limit", sql.Int, limitNum);
+    const paginationClause = `LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
+    queryParams.push(limitNum, offset);
 
-    // Count Query
     const countQuery = `SELECT COUNT(*) as total FROM Products p ${whereClause}`;
-    const countResult = await request.query(countQuery);
-    const totalProducts = countResult.recordset[0].total;
+    const countResult = await pool.query(
+      countQuery,
+      queryParams.slice(0, paramIndex - 3)
+    );
+    const totalProducts = parseInt(countResult.rows[0].total);
 
-    // Main Products Query
     const productsQuery = `
-      SELECT p.*, ISNULL(rev.AvgRating, p.Rating) as AvgRating, ISNULL(rev.ReviewCount, 0) as ReviewCount
+      SELECT p.*, COALESCE(rev.AvgRating, p.Rating) as AvgRating, COALESCE(rev.ReviewCount, 0) as ReviewCount
       FROM Products p
       LEFT JOIN (
-          SELECT ProductID, AVG(CAST(Rating AS FLOAT)) as AvgRating, COUNT(ReviewID) as ReviewCount 
+          SELECT ProductID, AVG(Rating) as AvgRating, COUNT(ReviewID) as ReviewCount 
           FROM ProductReviews GROUP BY ProductID
-      ) rev ON p.ProductID = rev.ProductID
+      ) rev ON p.productid = rev.productid
       ${whereClause} ${orderByClause} ${paginationClause}
     `;
 
-    const productsResult = await request.query(productsQuery);
-    const products = productsResult.recordset;
+    const productsResult = await pool.query(productsQuery, queryParams);
+    const products = productsResult.rows;
 
     res.status(200).json({
       products,
@@ -89,19 +89,22 @@ exports.getAllProducts = async (req, res) => {
     res.status(500).json({ message: "Error fetching products." });
   }
 };
+exports.getProductsByCategory = async (req, res) => {
+  
+  req.query.category = req.params.categoryName;
+  
+  return exports.getAllProducts(req, res);
+};
 
 exports.getProductById = async (req, res) => {
   const { id } = req.params;
   try {
-    let pool = await sql.connect(dbConfig);
-    let result = await pool
-      .request()
-      .input("ProductID", sql.Int, id)
-      .query("SELECT * FROM Products WHERE ProductID = @ProductID");
-
-    const product = result.recordset[0];
-    if (product) {
-      res.status(200).json(product);
+    const result = await pool.query(
+      "SELECT * FROM Products WHERE productid = $1",
+      [id]
+    );
+    if (result.rows.length > 0) {
+      res.status(200).json(result.rows[0]);
     } else {
       res.status(404).json({ message: "Product not found." });
     }
@@ -111,93 +114,8 @@ exports.getProductById = async (req, res) => {
   }
 };
 
-exports.getProductsByCategory = async (req, res) => {
-  const { categoryName } = req.params;
-
-  const {
-    minPrice,
-    maxPrice,
-    rating,
-    sortBy,
-    page = 1,
-    limit = 12,
-  } = req.query;
-
-  try {
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
-    const offset = (pageNum - 1) * limitNum;
-
-    let pool = await sql.connect(dbConfig);
-    const request = pool.request();
-
-    let whereClause = " WHERE Category = @Category AND Stock > 0";
-    request.input("Category", sql.NVarChar, categoryName);
-
-    if (minPrice) {
-      whereClause += " AND Price >= @MinPrice";
-      request.input("MinPrice", sql.Decimal(10, 2), minPrice);
-    }
-    if (maxPrice) {
-      whereClause += " AND Price <= @MaxPrice";
-      request.input("MaxPrice", sql.Decimal(10, 2), maxPrice);
-    }
-    if (rating) {
-      whereClause += " AND Rating >= @Rating";
-      request.input("Rating", sql.Decimal(2, 1), rating);
-    }
-
-    let orderByClause = " ORDER BY CreatedAt DESC";
-    if (sortBy) {
-      switch (sortBy) {
-        case "price_asc":
-          orderByClause = " ORDER BY Price ASC";
-          break;
-        case "price_desc":
-          orderByClause = " ORDER BY Price DESC";
-          break;
-        case "name_asc":
-          orderByClause = " ORDER BY Name ASC";
-          break;
-        case "name_desc":
-          orderByClause = " ORDER BY Name DESC";
-          break;
-        case "rating_desc":
-          orderByClause = " ORDER BY Rating DESC";
-          break;
-        default:
-          orderByClause = " ORDER BY CreatedAt DESC";
-      }
-    }
-
-    const paginationClause = ` OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY`;
-    request.input("Offset", sql.Int, offset);
-    request.input("Limit", sql.Int, limitNum);
-
-    const countQuery = `SELECT COUNT(*) as total FROM Products ${whereClause}`;
-    const countResult = await request.query(countQuery);
-    const totalProducts = countResult.recordset[0].total;
-
-    const productsQuery = `SELECT * FROM Products ${whereClause} ${orderByClause} ${paginationClause}`;
-
-    const productsResult = await request.query(productsQuery);
-    const products = productsResult.recordset;
-
-    res.status(200).json({
-      products,
-      totalPages: Math.ceil(totalProducts / limitNum),
-      currentPage: pageNum,
-      totalProducts: totalProducts,
-    });
-  } catch (error) {
-    console.error("Error fetching products by category:", error);
-    res.status(500).json({ message: "Error fetching products." });
-  }
-};
-
 exports.getAllCategories = async (req, res) => {
   try {
-    let pool = await sql.connect(dbConfig);
     const query = `
       WITH CategoryData AS (
         SELECT
@@ -215,8 +133,8 @@ exports.getAllCategories = async (req, res) => {
       FROM CategoryData
       WHERE rn = 1;
     `;
-    let result = await pool.request().query(query);
-    res.status(200).json(result.recordset);
+    const result = await pool.query(query);
+    res.status(200).json(result.rows);
   } catch (error) {
     console.error("Error fetching categories:", error);
     res.status(500).json({ message: "Error fetching categories." });
@@ -230,20 +148,15 @@ exports.searchProducts = async (req, res) => {
   }
 
   try {
-    let pool = await sql.connect(dbConfig);
     const query = `
       SELECT * FROM Products
-      WHERE Name LIKE @SearchTerm 
-        OR Description LIKE @SearchTerm 
-        OR Category LIKE @SearchTerm
-        OR Brand LIKE @SearchTerm;
+      WHERE Name ILIKE $1 
+        OR Description ILIKE $1 
+        OR Category ILIKE $1
+        OR Brand ILIKE $1;
     `;
-    let result = await pool
-      .request()
-      .input("SearchTerm", sql.NVarChar, `%${searchTerm}%`)
-      .query(query);
-
-    res.status(200).json(result.recordset);
+    const result = await pool.query(query, [`%${searchTerm}%`]);
+    res.status(200).json(result.rows);
   } catch (error) {
     console.error("Error during product search:", error);
     res.status(500).json({ message: "Error searching for products." });
@@ -252,11 +165,9 @@ exports.searchProducts = async (req, res) => {
 
 exports.getNewArrivals = async (req, res) => {
   try {
-    let pool = await sql.connect(dbConfig);
-
-    const query = "SELECT TOP 8 * FROM Products ORDER BY CreatedAt DESC";
-    const result = await pool.request().query(query);
-    res.status(200).json(result.recordset);
+    const query = "SELECT * FROM Products ORDER BY createdat DESC LIMIT 8";
+    const result = await pool.query(query);
+    res.status(200).json(result.rows);
   } catch (error) {
     console.error("Error fetching new arrivals:", error);
     res.status(500).json({ message: "Error fetching new products." });
@@ -284,29 +195,31 @@ exports.createProduct = async (req, res) => {
   }
 
   try {
-    const pool = await sql.connect(dbConfig);
     const query = `
       INSERT INTO Products (Name, Description, Price, Stock, Brand, Category, Thumbnail, ImagesJSON, DiscountPercentage)
-      VALUES (@Name, @Description, @Price, @Stock, @Brand, @Category, @Thumbnail, @ImagesJSON, @DiscountPercentage);
-      SELECT SCOPE_IDENTITY() AS ProductID;
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING productid; 
     `;
 
-    const result = await pool
-      .request()
-      .input("Name", sql.NVarChar(255), Name)
-      .input("Description", sql.NVarChar(sql.MAX), Description)
-      .input("Price", sql.Decimal(10, 2), Price)
-      .input("Stock", sql.Int, Stock)
-      .input("Brand", sql.NVarChar(100), Brand)
-      .input("Category", sql.NVarChar(100), Category)
-      .input("Thumbnail", sql.NVarChar(sql.MAX), Thumbnail)
-      .input("ImagesJSON", sql.NVarChar(sql.MAX), ImagesJSON || "[]")
-      .input("DiscountPercentage", sql.Decimal(5, 2), DiscountPercentage || 0)
-      .query(query);
+    const values = [
+      Name,
+      Description,
+      Price,
+      Stock,
+      Brand,
+      Category,
+      Thumbnail,
+      ImagesJSON || "[]",
+      DiscountPercentage || 0,
+    ];
+
+    const result = await pool.query(query, values);
 
     res.status(201).json({
       message: "Product created successfully.",
-      newProduct: result.recordset[0],
+      newProduct: {
+        productid: result.rows[0].productid,
+      },
     });
   } catch (error) {
     console.error("Error creating product:", error);
@@ -316,49 +229,35 @@ exports.createProduct = async (req, res) => {
 
 exports.updateProduct = async (req, res) => {
   const { id } = req.params;
-  const {
-    Name,
-    Description,
-    Price,
-    Stock,
-    Brand,
-    Category,
-    Thumbnail,
-    ImagesJSON,
-    DiscountPercentage,
-  } = req.body;
+
+  const fieldsToUpdate = { ...req.body };
+  delete fieldsToUpdate.id;
+
+  if (Object.keys(fieldsToUpdate).length === 0) {
+    return res.status(400).json({ message: "No data provided to update." });
+  }
 
   try {
-    const pool = await sql.connect(dbConfig);
+    const updateFields = [];
+    const updateValues = [];
+    let paramIndex = 1;
+
+    for (const [key, value] of Object.entries(fieldsToUpdate)) {
+      updateFields.push(`${key.toLowerCase()} = $${paramIndex++}`);
+      updateValues.push(value);
+    }
+
+    updateValues.push(id);
+
     const query = `
-      UPDATE Products SET
-        Name = @Name,
-        Description = @Description,
-        Price = @Price,
-        Stock = @Stock,
-        Brand = @Brand,
-        Category = @Category,
-        Thumbnail = @Thumbnail,
-        ImagesJSON = @ImagesJSON,
-        DiscountPercentage = @DiscountPercentage
-      WHERE ProductID = @ProductID;
+      UPDATE products 
+      SET ${updateFields.join(", ")} 
+      WHERE productid = $${paramIndex};
     `;
 
-    const result = await pool
-      .request()
-      .input("ProductID", sql.Int, id)
-      .input("Name", sql.NVarChar(255), Name)
-      .input("Description", sql.NVarChar(sql.MAX), Description)
-      .input("Price", sql.Decimal(10, 2), Price)
-      .input("Stock", sql.Int, Stock)
-      .input("Brand", sql.NVarChar(100), Brand)
-      .input("Category", sql.NVarChar(100), Category)
-      .input("Thumbnail", sql.NVarChar(sql.MAX), Thumbnail)
-      .input("ImagesJSON", sql.NVarChar(sql.MAX), ImagesJSON || "[]")
-      .input("DiscountPercentage", sql.Decimal(5, 2), DiscountPercentage || 0)
-      .query(query);
+    const result = await pool.query(query, updateValues);
 
-    if (result.rowsAffected[0] === 0) {
+    if (result.rowCount === 0) {
       return res
         .status(404)
         .json({ message: "Product not found or no new data to update." });
@@ -375,45 +274,46 @@ exports.deleteProduct = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const pool = await sql.connect(dbConfig);
-    const query = `DELETE FROM Products WHERE ProductID = @ProductID;`;
+    const query = `DELETE FROM Products WHERE productid = $1;`;
+    const result = await pool.query(query, [id]);
 
-    const result = await pool
-      .request()
-      .input("ProductID", sql.Int, id)
-      .query(query);
-
-    if (result.rowsAffected[0] === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ message: "Product not found." });
     }
 
     res.status(200).json({ message: "Product deleted successfully." });
   } catch (error) {
+    if (error.code === "23503") {
+      return res.status(400).json({
+        message:
+          "Cannot delete this product as it is part of an existing order. Please consider marking it as out of stock instead.",
+      });
+    }
     console.error(`Error deleting product (${id}):`, error);
     res.status(500).json({ message: "Error deleting product." });
   }
 };
+
 exports.getDealOfTheDay = async (req, res) => {
   try {
-    const pool = await sql.connect(dbConfig);
     const query = `
-      SELECT TOP 1 * 
+      SELECT * 
       FROM Products
       WHERE Stock > 0 AND DiscountPercentage > 0
-      ORDER BY DiscountPercentage DESC;
+      ORDER BY DiscountPercentage DESC
+      LIMIT 1;
     `;
-    const result = await pool.request().query(query);
+    const result = await pool.query(query);
 
-    if (result.recordset.length > 0) {
-      res.status(200).json(result.recordset[0]);
+    if (result.rows.length > 0) {
+      res.status(200).json(result.rows[0]);
     } else {
-      const fallbackResult = await pool
-        .request()
-        .query(
-          "SELECT TOP 1 * FROM Products WHERE Stock > 0 ORDER BY CreatedAt DESC"
-        );
-      if (fallbackResult.recordset.length > 0) {
-        res.status(200).json(fallbackResult.recordset[0]);
+      const fallbackQuery =
+        "SELECT * FROM Products WHERE Stock > 0 ORDER BY createdat DESC LIMIT 1";
+      const fallbackResult = await pool.query(fallbackQuery);
+
+      if (fallbackResult.rows.length > 0) {
+        res.status(200).json(fallbackResult.rows[0]);
       } else {
         res.status(404).json({ message: "No products available for a deal." });
       }
@@ -423,14 +323,19 @@ exports.getDealOfTheDay = async (req, res) => {
     res.status(500).json({ message: "Could not fetch deal of the day." });
   }
 };
+
 exports.getProductsStats = async (req, res) => {
   try {
-    const pool = await sql.connect(dbConfig);
-    const result = await pool
-      .request()
-      .query("SELECT COUNT(*) as totalProducts FROM Products");
-    res.status(200).json(result.recordset[0]);
+    const result = await pool.query(
+      "SELECT COUNT(*) as totalproducts FROM Products"
+    );
+
+    const stats = {
+      totalproducts: parseInt(result.rows[0].totalproducts),
+    };
+    res.status(200).json(stats);
   } catch (error) {
+    console.error("Error fetching product stats:", error);
     res.status(500).json({ message: "Failed to get product stats." });
   }
 };
