@@ -20,7 +20,7 @@ exports.getAllProducts = async (req, res) => {
     let paramIndex = 1;
 
     if (category) {
-      whereConditions.push(`p.category = $${paramIndex++}`);
+      whereConditions.push(`p.category ILIKE $${paramIndex++}`);
       queryParams.push(category);
     }
     if (minPrice) {
